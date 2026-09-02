@@ -166,7 +166,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("📈 Burn-in Anomaly Detector")
+st.title("📈 BurnGuard AI Anomaly Detector")
 st.write("Enter the component's measurement data to predict if it's an ANOMALY or NORMAL.")
 
 if "prediction_counts" not in st.session_state:
