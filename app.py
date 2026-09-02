@@ -27,6 +27,7 @@ MODEL_PATH = resolve_artifact_path('best_model.pkl', 'best_model*.pkl')
 SCALER_PATH = resolve_artifact_path('scaler.pkl', 'scaler*.pkl')
 LABEL_ENCODER_PATH = resolve_artifact_path('label_encoder.pkl', 'label_encoder*.pkl')
 CONFIG_PATH = resolve_artifact_path('feature_config.json', 'feature_config*.json')
+DATASET_PATH = resolve_artifact_path('SIH26170_best.csv', '*.csv')
 
 # --- Load Artifacts --- #
 @st.cache_resource
@@ -52,6 +53,16 @@ ENGINEERED_FEATURES = feature_config['engineered_features']
 ALL_FEATURES = feature_config['all_features']
 BEST_MODEL_NAME = feature_config['best_model_name']
 MODEL_NEEDS_SCALING = feature_config['model_needs_scaling']
+MODEL_LABELS = {0: 'NORMAL', 1: 'ANOMALY'}
+
+@st.cache_data
+def load_dataset_counts():
+    dataset = pd.read_csv(DATASET_PATH)
+    labels = dataset['label'].astype(str).str.strip().str.upper()
+    return labels.value_counts().reindex(['NORMAL', 'ANOMALY'], fill_value=0).to_dict()
+
+
+dataset_counts = load_dataset_counts()
 
 # --- Feature Engineering Function --- #
 def apply_feature_engineering(df_input):
@@ -82,15 +93,98 @@ def apply_feature_engineering(df_input):
 # --- Streamlit UI --- #
 st.set_page_config(page_title="Burn-in Anomaly Detection", layout="centered")
 
+st.markdown(
+    """
+    <style>
+    :root {
+        --navy: #17324d;
+        --teal: #087f8c;
+        --teal-dark: #05616c;
+        --sky: #eaf6f7;
+        --ink: #263746;
+        --coral: #d95d39;
+    }
+
+    .stApp {
+        background: linear-gradient(135deg, #f7fbfc 0%, var(--sky) 100%);
+        color: var(--ink);
+    }
+
+    .block-container {
+        max-width: 850px;
+        padding-top: 2.5rem;
+        padding-bottom: 3rem;
+    }
+
+    h1, h2, h3 {
+        color: var(--navy) !important;
+        letter-spacing: 0 !important;
+    }
+
+    h1 {
+        border-bottom: 4px solid var(--teal);
+        padding-bottom: 0.7rem;
+    }
+
+    [data-testid="stNumberInput"] label {
+        color: var(--navy);
+        font-weight: 600;
+    }
+
+    [data-testid="stNumberInput"] input {
+        border: 1px solid #9bc8cc;
+        border-radius: 6px;
+    }
+
+    [data-testid="stNumberInput"] input:focus {
+        border-color: var(--teal);
+        box-shadow: 0 0 0 2px rgba(8, 127, 140, 0.18);
+    }
+
+    .stButton > button {
+        width: 100%;
+        background: var(--teal);
+        color: white;
+        border: 0;
+        border-radius: 6px;
+        font-weight: 700;
+        padding: 0.65rem 1rem;
+    }
+
+    .stButton > button:hover {
+        background: var(--teal-dark);
+        color: white;
+    }
+
+    [data-testid="stDataFrame"] {
+        border: 1px solid #b8dadd;
+        border-radius: 6px;
+        overflow: hidden;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("📈 Burn-in Anomaly Detector")
 st.write("Enter the component's measurement data to predict if it's an ANOMALY or NORMAL.")
+
+if "prediction_counts" not in st.session_state:
+    st.session_state.prediction_counts = {"NORMAL": 0, "ANOMALY": 0}
 
 st.header("Component Measurements")
 
 # Input fields for raw features
 input_data = {}
 for feature in RAW_FEATURES:
-    input_data[feature] = st.number_input(f"Enter {feature.replace('_', ' ').title()}:", value=9.5, format="%.3f", key=feature)
+    input_data[feature] = st.number_input(
+        f"Enter {feature.replace('_', ' ').title()}:",
+        value=9.5,
+        min_value=0.0,
+        max_value=25.0,
+        format="%.3f",
+        key=feature,
+    )
 
 if st.button("Predict Anomaly"):
     # Create DataFrame from input
@@ -112,22 +206,21 @@ if st.button("Predict Anomaly"):
 
     # Make prediction
     prediction_encoded = model.predict(X_final)
-    prediction_proba = model.predict_proba(X_final)[:, 1]
+    anomaly_class_index = list(model.classes_).index(1)
+    prediction_proba = model.predict_proba(X_final)[:, anomaly_class_index]
 
     # Decode the prediction
     # Assuming label_encoder.classes_ contains ['NORMAL', 'ANOMALY'] or similar
     # The previous notebook set ANOMALY=1, NORMAL=0. The label_encoder.inverse_transform expects 0 or 1.
     # So if 1 was ANOMALY and 0 was NORMAL in y_encoded, the label_encoder should map them back.
 
-    # Check if the label_encoder was used to map (NORMAL -> 0, ANOMALY -> 1)
-    # If y_encoded = 1 - y_encoded was applied, then the original LabelEncoder might map ANOMALY to 0 and NORMAL to 1.
-    # It's safer to directly map based on what we know: 1 = ANOMALY, 0 = NORMAL
-    if prediction_encoded[0] == 1:
-        predicted_label = 'ANOMALY'
+    predicted_label = MODEL_LABELS[int(prediction_encoded[0])]
+    if predicted_label == 'ANOMALY':
         st.error(f"\n\n### Predicted Status: {predicted_label} 🔴")
     else:
-        predicted_label = 'NORMAL'
         st.success(f"\n\n### Predicted Status: {predicted_label} 🟢")
+
+    st.session_state.prediction_counts[predicted_label] += 1
 
     st.write(f"Confidence (Probability of Anomaly): {prediction_proba[0]:.4f}")
     st.write(f"_Prediction made using the '{BEST_MODEL_NAME}' model._")
@@ -140,3 +233,40 @@ if st.button("Predict Anomaly"):
         if MODEL_NEEDS_SCALING:
             st.write("**Scaled Features (before prediction):**")
             st.dataframe(pd.DataFrame(X_final, columns=ALL_FEATURES))
+
+st.header("Dataset Label Counts")
+dataset_count_table = pd.DataFrame(
+    {
+        "Status": ["NORMAL", "ANOMALY"],
+        "Count": [
+            dataset_counts["NORMAL"],
+            dataset_counts["ANOMALY"],
+        ],
+    }
+)
+st.dataframe(
+    dataset_count_table.style.map(
+        lambda value: "color: #087f8c; font-weight: 700"
+        if value == "NORMAL"
+        else "color: #d95d39; font-weight: 700"
+        if value == "ANOMALY"
+        else "font-weight: 700",
+        subset=["Status"],
+    ),
+    hide_index=True,
+    use_container_width=True,
+)
+
+st.caption(f"Total records in dataset: {sum(dataset_counts.values())}")
+
+st.header("Predictions Made This Session")
+session_count_table = pd.DataFrame(
+    {
+        "Status": ["NORMAL", "ANOMALY"],
+        "Count": [
+            st.session_state.prediction_counts["NORMAL"],
+            st.session_state.prediction_counts["ANOMALY"],
+        ],
+    }
+)
+st.dataframe(session_count_table, hide_index=True, use_container_width=True)
